@@ -8,6 +8,7 @@ from itsdangerous import BadSignature, URLSafeSerializer
 from app.config import Config
 from app.db import get_db, init_db
 from app.services import (
+    cancel_judgment,
     execute_judgment,
     list_judgments,
     list_partitions,
@@ -183,10 +184,10 @@ async def api_reconcile(request: Request):
 @app.post("/api/judgments/{judgment_id}/cancel")
 def api_cancel(request: Request, judgment_id: int):
     require_user(request)
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE judgments SET status='已作废' WHERE id=? AND status='待执行'",
-            (judgment_id,),
-        )
-    return {"ok": True}
+    try:
+        with get_db() as conn:
+            result = cancel_judgment(conn, judgment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "cancel": result}
 

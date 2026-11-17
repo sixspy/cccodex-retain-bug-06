@@ -8,10 +8,23 @@ from app.config import Config
 def connect(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or Config.database()
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # 写锁竞争时等待而非立即报 database is locked，配合 BEGIN IMMEDIATE 占坑
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
+
+
+def begin_write(conn: sqlite3.Connection) -> None:
+    """显式抢占 SQLite 写锁（占坑锁写）。
+
+    作废与执行是同一裁决上的两个并发写事务：先以 BEGIN IMMEDIATE 拿到
+    RESERVED 锁，再用带状态条件的 UPDATE 裁决归属，避免两侧同时通过
+    读时检查后双双写成功（作废单被二次执行）。
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
 
 
 @contextmanager

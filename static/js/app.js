@@ -20,13 +20,15 @@
 
   function tag(state) {
     const cls =
-      state === "在线" || state === "待执行"
+      state === "在线" || state === "待执行" || state === "执行中" || state === "裁撤中"
         ? "warn"
         : state === "已完成" || state === "已归档" || state === "已销毁"
           ? "ok"
           : state === "已失败"
             ? "bad"
-            : "";
+            : state === "已作废"
+              ? "off"
+              : "";
     return `<span class="tag ${cls}">${state}</span>`;
   }
 
@@ -127,7 +129,8 @@
     main.innerHTML = `
       <section class="panel">
         <h2>裁决清单</h2>
-        <p class="sub">待执行可点「执行」。执行结果写回分区存储态与执行流水。</p>
+        <p class="sub">待执行可点「执行」或「作废」。作废原子释放分区占用并写执行流水，作废单不可再执行。</p>
+        <p class="form-msg" id="judge-msg"></p>
         <table>
           <thead><tr><th>编号</th><th>主题域</th><th>业务日</th><th>策略</th><th>动作</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>
@@ -135,19 +138,31 @@
               data.items.length
                 ? data.items
                     .map(
-                      (j) => `<tr>
+                      (j) => {
+                        const canAct = j.status === "待执行" || j.status === "已失败";
+                        const reason =
+                          j.status === "已失败" && j.fail_reason
+                            ? `<div class="sub">失败原因：${j.fail_reason}</div>`
+                            : j.status === "已作废"
+                              ? `<div class="sub">已作废，执行被拒绝</div>`
+                              : "";
+                        return `<tr class="${j.status === "已作废" ? "row-off" : ""}">
               <td>${j.id}</td>
               <td class="mono">${j.domain_code}</td>
               <td class="mono">${j.biz_date}</td>
               <td>v${j.policy_version} / ${j.keep_days}天</td>
               <td>${j.decided_action}</td>
-              <td>${tag(j.status)}</td>
+              <td>${tag(j.status)}${reason}</td>
               <td>${
-                j.status === "待执行" || j.status === "已失败"
-                  ? `<button type="button" data-exec="${j.id}">执行</button>`
+                canAct
+                  ? `<button type="button" class="mini" data-exec="${j.id}">执行</button>` +
+                    (j.status === "待执行"
+                      ? `<button type="button" class="mini ghost" data-cancel="${j.id}">作废</button>`
+                      : "")
                   : "—"
               }</td>
-            </tr>`
+            </tr>`;
+                      }
                     )
                     .join("")
                 : `<tr><td colspan="7" class="empty">尚无裁决，请先跑到期扫描</td></tr>`
@@ -155,12 +170,67 @@
           </tbody>
         </table>
       </section>`;
+    const msg = document.getElementById("judge-msg");
+    const flash = (text, ok) => {
+      msg.textContent = text;
+      msg.className = `form-msg ${ok ? "ok" : "bad"}`;
+    };
     main.querySelectorAll("[data-exec]").forEach((btn) => {
       btn.onclick = async () => {
-        await api(`/api/judgments/${btn.dataset.exec}/execute`, { method: "POST" });
-        await renderJudgments();
+        btn.disabled = true;
+        try {
+          await api(`/api/judgments/${btn.dataset.exec}/execute`, { method: "POST" });
+          await renderJudgments();
+        } catch (err) {
+          flash(err.message, false);
+          btn.disabled = false;
+        }
       };
     });
+    main.querySelectorAll("[data-cancel]").forEach((btn) => {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          await api(`/api/judgments/${btn.dataset.cancel}/cancel`, { method: "POST" });
+          await renderJudgments();
+        } catch (err) {
+          flash(err.message, false);
+          btn.disabled = false;
+        }
+      };
+    });
+  }
+
+  async function renderRuns() {
+    const data = await api("/api/runs");
+    main.innerHTML = `
+      <section class="panel">
+        <h2>执行流水</h2>
+        <p class="sub">执行足迹与裁决状态同源落库：归档/销毁成功、失败、作废各有一条可核记录，作废单结果态为「已作废」。</p>
+        <table>
+          <thead><tr><th>流水号</th><th>裁决编号</th><th>动作</th><th>结果态</th><th>是否成功</th><th>归档地址（放行详情）</th><th>说明</th><th>时间</th></tr></thead>
+          <tbody>
+            ${
+              data.items.length
+                ? data.items
+                    .map(
+                      (r) => `<tr class="${r.result_state === "已作废" ? "row-off" : ""}">
+              <td>${r.id}</td>
+              <td class="mono">${r.judgment_id}</td>
+              <td>${r.action}</td>
+              <td>${tag(r.result_state)}</td>
+              <td>${r.ok === 1 ? "成功" : r.result_state === "已作废" ? "未执行" : "失败"}</td>
+              <td class="mono">${r.archive_uri || "—"}</td>
+              <td>${r.detail || "—"}</td>
+              <td class="mono">${r.created_at}</td>
+            </tr>`
+                    )
+                    .join("")
+                : `<tr><td colspan="8" class="empty">尚无执行流水</td></tr>`
+            }
+          </tbody>
+        </table>
+      </section>`;
   }
 
   async function renderReconcile() {
@@ -213,6 +283,7 @@
     partitions: renderPartitions,
     scan: renderScan,
     judgments: renderJudgments,
+    runs: renderRuns,
     reconcile: renderReconcile,
   };
 
